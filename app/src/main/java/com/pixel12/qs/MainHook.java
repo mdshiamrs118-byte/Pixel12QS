@@ -162,6 +162,52 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("handleStateChanged hook failed", t);
         }
+
+        hookQuickTiles(cl, tileView);
+    }
+
+    // ---- quick bar (the collapsed row of icon tiles at the top) ----
+    private void hookQuickTiles(ClassLoader cl, final Class<?> tileView) {
+        try {
+            Class<?> baseClass = XposedHelpers.findClass(
+                    "com.android.systemui.qs.tileimpl.QSTileBaseView", cl);
+            Class<?> stateClass = XposedHelpers.findClass(
+                    "com.android.systemui.plugins.qs.QSTile$State", cl);
+            XposedHelpers.findAndHookMethod(baseClass, "handleStateChanged", stateClass,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                // Big tiles are handled by the QSTileView hook
+                                if (tileView.isInstance(param.thisObject)) return;
+                                applyQuickState((View) param.thisObject, param.args[0]);
+                            } catch (Throwable t) {
+                                log("applyQuickState failed", t);
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            log("quick tile hook failed", t);
+        }
+    }
+
+    private void applyQuickState(View tile, Object state) {
+        Context c = tile.getContext();
+        int s = XposedHelpers.getIntField(state, "state");
+        int color = get(c, s == 2 ? Config.ACTIVE : Config.INACTIVE);
+
+        // Hide the stock circle, draw our own rounded shape behind the icon
+        View bg = (View) getField(tile, "mBg");
+        if (bg != null) bg.setVisibility(View.GONE);
+
+        View target = (View) getField(tile, "mIconFrame");
+        if (target == null) target = tile;
+
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(color);
+        shape.setCornerRadius(dp(c, get(c, Config.QUICK_RADIUS)));
+        target.setBackground(shape);
+        target.setAlpha(s == 0 ? 0.5f : 1f);
     }
 
     private void restyleLayout(LinearLayout tile) {

@@ -17,12 +17,13 @@ public final class Config {
     public static final String TEXT = "text_color";
     public static final String SECOND = "second_color";
     public static final String HIDE_CIRCLE = "hide_circle";
+    public static final String QUICK_RADIUS = "quick_radius_dp";
 
     public static final String[] KEYS = {
-            COLUMNS, HEIGHT, RADIUS, PAD, TEXT_SP, ACTIVE, INACTIVE, TEXT, SECOND, HIDE_CIRCLE
+            COLUMNS, HEIGHT, RADIUS, PAD, TEXT_SP, ACTIVE, INACTIVE, TEXT, SECOND, HIDE_CIRCLE, QUICK_RADIUS
     };
     public static final int[] DEFAULTS = {
-            2, 72, 28, 16, 14, 0xFF1A73E8, 0xFF3C4043, 0xFFFFFFFF, 0xCCFFFFFF, 1
+            2, 72, 28, 16, 14, 0xFF1A73E8, 0xFF3C4043, 0xFFFFFFFF, 0xCCFFFFFF, 1, 24
     };
 
     public static int def(String key) {
