@@ -111,6 +111,17 @@ public class MainHook implements IXposedHookLoadPackage {
                                     int dp = get(appContext(), Config.HEIGHT);
                                     param.setResult(Math.round(dp * r.getDisplayMetrics().density));
                                 }
+                                else if ("quick_qs_total_height".equals(name)) {
+                                    // keep the collapsed header tall enough for the taller quick tiles
+                                    int origId = r.getIdentifier("qs_quick_tile_size", "dimen",
+                                            r.getResourcePackageName((Integer) param.args[0]));
+                                    if (origId != 0) {
+                                        int orig = r.getDimensionPixelSize(origId);
+                                        int want = Math.round(get(appContext(), Config.QUICK_HEIGHT)
+                                                * r.getDisplayMetrics().density);
+                                        param.setResult(((Integer) param.getResult()) + (want - orig));
+                                    }
+                                }
                             } catch (Throwable ignored) {
                             }
                         }
