@@ -164,6 +164,80 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         hookQuickTiles(cl, tileView);
+        hookQuickBarLayout(cl);
+    }
+
+    // ---- quick bar: same pill tiles as the big grid, filling the row evenly ----
+    private void hookQuickBarLayout(ClassLoader cl) {
+        // 1) Make the quick bar use the full tile view (icon + label) instead of the icon-only one
+        String[] factories = {
+                "com.android.systemui.qs.QSTileHost",
+                "com.android.systemui.qs.tileimpl.QSFactoryImpl"
+        };
+        for (String name : factories) {
+            try {
+                Class<?> f = XposedHelpers.findClass(name, cl);
+                XposedBridge.hookAllMethods(f, "createTileView", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            if (param.args.length >= 2 && param.args[1] instanceof Boolean) {
+                                param.args[1] = false; // collapsedView = false
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+                log("createTileView hooked in " + name);
+            } catch (Throwable t) {
+                log("createTileView hook skipped for " + name);
+            }
+        }
+
+        // 2) Spread the tiles evenly across the row (no empty middle, no edge-hugging icons)
+        try {
+            Class<?> header = XposedHelpers.findClass(
+                    "com.android.systemui.qs.QuickQSPanel$HeaderTileLayout", cl);
+            XC_MethodHook relayout = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        fixQuickRow((android.view.ViewGroup) param.thisObject);
+                    } catch (Throwable t) {
+                        log("fixQuickRow failed", t);
+                    }
+                }
+            };
+            XposedBridge.hookAllMethods(header, "addTile", relayout);
+            XposedBridge.hookAllMethods(header, "removeTile", relayout);
+            XposedBridge.hookAllMethods(header, "updateResources", relayout);
+            log("HeaderTileLayout hooked");
+        } catch (Throwable t) {
+            log("HeaderTileLayout hook failed", t);
+        }
+    }
+
+    private void fixQuickRow(android.view.ViewGroup row) {
+        Context c = row.getContext();
+        int h = dp(c, get(c, Config.QUICK_HEIGHT));
+        int gap = dp(c, get(c, Config.QUICK_GAP));
+        if (row instanceof LinearLayout) {
+            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL);
+        }
+        for (int i = 0; i < row.getChildCount(); i++) {
+            View v = row.getChildAt(i);
+            LinearLayout.LayoutParams lp;
+            if (v instanceof android.widget.Space) {
+                // the spacers are what pushed the icons to the edges
+                lp = new LinearLayout.LayoutParams(0, 0, 0f);
+                v.setVisibility(View.GONE);
+            } else {
+                lp = new LinearLayout.LayoutParams(0, h, 1f);
+                lp.setMargins(gap, 0, gap, 0);
+                lp.gravity = Gravity.CENTER_VERTICAL;
+            }
+            v.setLayoutParams(lp);
+        }
     }
 
     // ---- quick bar (the collapsed row of icon tiles at the top) ----

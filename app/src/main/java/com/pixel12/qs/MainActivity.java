@@ -62,7 +62,8 @@ public class MainActivity extends Activity {
         slider("Corner roundness", Config.RADIUS, 0, 60, " dp");
         slider("Side padding", Config.PAD, 4, 32, " dp");
         slider("Text size", Config.TEXT_SP, 10, 20, " sp");
-        slider("Quick bar roundness", Config.QUICK_RADIUS, 0, 40, " dp");
+        slider("Quick bar tile height", Config.QUICK_HEIGHT, 40, 100, " dp");
+        slider("Quick bar tile gap", Config.QUICK_GAP, 0, 16, " dp");
 
         header("Colors");
         colorRow("Active tile color", Config.ACTIVE);
