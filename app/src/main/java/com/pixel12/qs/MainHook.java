@@ -237,16 +237,20 @@ public class MainHook implements IXposedHookLoadPackage {
         }
         for (int i = 0; i < row.getChildCount(); i++) {
             View v = row.getChildAt(i);
-            LinearLayout.LayoutParams lp;
             if (v instanceof android.widget.Space) {
                 // the spacers are what pushed the icons to the edges
-                lp = new LinearLayout.LayoutParams(0, 0, 0f);
-                v.setVisibility(View.GONE);
-            } else {
-                lp = new LinearLayout.LayoutParams(0, h, 1f);
-                lp.setMargins(gap, 0, gap, 0);
-                lp.gravity = Gravity.CENTER_VERTICAL;
+                if (v.getVisibility() != View.GONE) v.setVisibility(View.GONE);
+                continue;
             }
+            android.view.ViewGroup.LayoutParams p = v.getLayoutParams();
+            if (p instanceof LinearLayout.LayoutParams) {
+                LinearLayout.LayoutParams o = (LinearLayout.LayoutParams) p;
+                if (o.width == 0 && o.height == h && o.weight == 1f
+                        && o.leftMargin == gap && o.rightMargin == gap) continue;
+            }
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, h, 1f);
+            lp.setMargins(gap, 0, gap, 0);
+            lp.gravity = Gravity.CENTER_VERTICAL;
             v.setLayoutParams(lp);
         }
     }
@@ -276,23 +280,85 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    /**
+     * Collapsed quick bar tile (icon-only class). We turn it into the same pill as the big tiles:
+     * rounded background, icon on the left, our own label + status text on the right.
+     * Works without knowing any RR class names: the row is found through the tile's parent.
+     */
     private void applyQuickState(View tile, Object state) {
         Context c = tile.getContext();
         int s = XposedHelpers.getIntField(state, "state");
         int color = get(c, s == 2 ? Config.ACTIVE : Config.INACTIVE);
 
-        // Hide the stock circle, draw our own rounded shape behind the icon
-        View bg = (View) getField(tile, "mBg");
-        if (bg != null) bg.setVisibility(View.GONE);
-
-        View target = (View) getField(tile, "mIconFrame");
-        if (target == null) target = tile;
+        View circle = (View) getField(tile, "mBg");
+        if (circle != null) circle.setVisibility(View.GONE);
 
         GradientDrawable shape = new GradientDrawable();
         shape.setColor(color);
-        shape.setCornerRadius(dp(c, get(c, Config.QUICK_RADIUS)));
-        target.setBackground(shape);
-        target.setAlpha(s == 0 ? 0.5f : 1f);
+        shape.setCornerRadius(dp(c, get(c, Config.RADIUS)));
+        tile.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), shape, null));
+        tile.setAlpha(s == 0 ? 0.5f : 1f);
+
+        if (tile instanceof LinearLayout) {
+            addQuickLabels((LinearLayout) tile, state);
+        }
+
+        android.view.ViewParent parent = tile.getParent();
+        if (parent instanceof LinearLayout) {
+            fixQuickRow((LinearLayout) parent);
+        }
+    }
+
+    private void addQuickLabels(LinearLayout tile, Object state) {
+        Context c = tile.getContext();
+        TextView label = (TextView) XposedHelpers.getAdditionalInstanceField(tile, "p12_label");
+        TextView second = (TextView) XposedHelpers.getAdditionalInstanceField(tile, "p12_second");
+        if (label == null) {
+            int padH = dp(c, get(c, Config.PAD));
+            tile.setOrientation(LinearLayout.HORIZONTAL);
+            tile.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            tile.setPadding(padH, dp(c, 8), padH - dp(c, 4), dp(c, 8));
+            tile.setClipChildren(false);
+            tile.setClipToPadding(false);
+
+            LinearLayout col = new LinearLayout(c);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+
+            label = new TextView(c);
+            label.setSingleLine(true);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            label.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+            second = new TextView(c);
+            second.setSingleLine(true);
+            second.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            second.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+            col.addView(label);
+            col.addView(second);
+
+            LinearLayout.LayoutParams lp =
+                    new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMarginStart(dp(c, 12));
+            lp.gravity = Gravity.CENTER_VERTICAL;
+            tile.addView(col, lp);
+
+            XposedHelpers.setAdditionalInstanceField(tile, "p12_label", label);
+            XposedHelpers.setAdditionalInstanceField(tile, "p12_second", second);
+            log("Styled a quick bar tile, parent = " + tile.getParent().getClass().getName());
+        }
+
+        int sp = get(c, Config.TEXT_SP);
+        label.setTextColor(get(c, Config.TEXT));
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        second.setTextColor(get(c, Config.SECOND));
+        second.setTextSize(TypedValue.COMPLEX_UNIT_SP, Math.max(8, sp - 2));
+
+        Object l = getField(state, "label");
+        Object sec = getField(state, "secondaryLabel");
+        label.setText(l instanceof CharSequence ? (CharSequence) l : "");
+        CharSequence secText = sec instanceof CharSequence ? (CharSequence) sec : "";
+        second.setText(secText);
+        second.setVisibility(secText.length() == 0 ? View.GONE : View.VISIBLE);
     }
 
     private void restyleLayout(LinearLayout tile) {
@@ -331,6 +397,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void applyState(LinearLayout tile, Object state) {
         Context c = tile.getContext();
+        android.view.ViewParent parent = tile.getParent();
+        if (parent instanceof LinearLayout) {
+            fixQuickRow((android.view.ViewGroup) parent);
+        }
         int s = XposedHelpers.getIntField(state, "state"); // 0 unavailable, 1 inactive, 2 active
         int color = get(c, s == 2 ? Config.ACTIVE : Config.INACTIVE);
 
