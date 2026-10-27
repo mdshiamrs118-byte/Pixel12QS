@@ -3,7 +3,22 @@
 
     <application
         android:allowBackup="false"
-        android:label="Pixel 12 QS">
+        android:label="Pixel 12 QS"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name=".SettingsProvider"
+            android:authorities="com.pixel12.qs.settings"
+            android:exported="true" />
 
         <meta-data
             android:name="xposedmodule"

@@ -5,6 +5,10 @@ import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.SystemClock;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
@@ -18,32 +22,64 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
  * Restyles Android 10 SystemUI quick settings tiles into Pixel / Android 12 style pills.
+ * Values come from the module app (Pixel 12 QS) through its SettingsProvider.
  * Every hook is wrapped in try/catch so a ROM difference can never crash SystemUI.
- * Check LSPosed logs for the tag "Pixel12QS" if something doesn't apply.
+ * Check the LSPosed log for the tag "Pixel12QS" if something doesn't apply.
  */
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "Pixel12QS";
     private static final String SYSTEMUI = "com.android.systemui";
+    private static final Uri URI = Uri.parse("content://" + Config.AUTHORITY);
 
-    // ---- Tweak these ----
-    private static final int COLUMNS = 2;
-    private static final int RADIUS_DP = 28;
-    private static final int COLOR_ACTIVE = 0xFF1A73E8;
-    private static final int COLOR_INACTIVE = 0xFF3C4043;
-    private static final int COLOR_TEXT = 0xFFFFFFFF;
-    private static final int COLOR_TEXT_SECOND = 0xCCFFFFFF;
+    // ---- settings cache ----
+    private static Bundle cache;
+    private static long lastLoad;
+    private static boolean loading;
+
+    private static Bundle settings(Context ctx) {
+        if (loading) return cache;
+        long now = SystemClock.uptimeMillis();
+        if (cache != null && now - lastLoad < 1500) return cache;
+        loading = true;
+        try {
+            if (ctx != null) {
+                Bundle b = ctx.getContentResolver().call(URI, "get", null, null);
+                if (b != null) cache = b;
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            loading = false;
+            lastLoad = now;
+        }
+        return cache;
+    }
+
+    private static int get(Context ctx, String key) {
+        Bundle b = settings(ctx);
+        if (b != null && b.containsKey(key)) return b.getInt(key);
+        return Config.def(key);
+    }
+
+    private static Context appContext() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            return (Context) XposedHelpers.callStaticMethod(at, "currentApplication");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) {
         if (!SYSTEMUI.equals(lpparam.packageName)) return;
         log("Loaded in SystemUI");
-        hookColumns();
+        hookResources();
         hookTileView(lpparam.classLoader);
     }
 
-    // ---- 2 columns ----
-    private void hookColumns() {
+    // ---- columns and tile height ----
+    private void hookResources() {
         try {
             XposedHelpers.findAndHookMethod(Resources.class, "getInteger", int.class,
                     new XC_MethodHook() {
@@ -53,18 +89,38 @@ public class MainHook implements IXposedHookLoadPackage {
                                 Resources r = (Resources) param.thisObject;
                                 String name = r.getResourceEntryName((Integer) param.args[0]);
                                 if ("quick_settings_num_columns".equals(name)) {
-                                    param.setResult(COLUMNS);
+                                    param.setResult(get(appContext(), Config.COLUMNS));
                                 }
                             } catch (Throwable ignored) {
                             }
                         }
                     });
         } catch (Throwable t) {
-            log("hookColumns failed", t);
+            log("columns hook failed", t);
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(Resources.class, "getDimensionPixelSize", int.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Resources r = (Resources) param.thisObject;
+                                String name = r.getResourceEntryName((Integer) param.args[0]);
+                                if ("qs_tile_height".equals(name)) {
+                                    int dp = get(appContext(), Config.HEIGHT);
+                                    param.setResult(Math.round(dp * r.getDisplayMetrics().density));
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            log("height hook failed", t);
         }
     }
 
-    // ---- Tile layout and colors ----
+    // ---- tile layout and colors ----
     private void hookTileView(ClassLoader cl) {
         final Class<?> tileView;
         try {
@@ -74,7 +130,6 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
 
-        // Rearrange: icon left, labels right
         try {
             XposedBridge.hookAllConstructors(tileView, new XC_MethodHook() {
                 @Override
@@ -90,7 +145,6 @@ public class MainHook implements IXposedHookLoadPackage {
             log("constructor hook failed", t);
         }
 
-        // Colors per state
         try {
             Class<?> stateClass = XposedHelpers.findClass(
                     "com.android.systemui.plugins.qs.QSTile$State", cl);
@@ -112,17 +166,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void restyleLayout(LinearLayout tile) {
         Context c = tile.getContext();
+        int padH = dp(c, get(c, Config.PAD));
         tile.setOrientation(LinearLayout.HORIZONTAL);
         tile.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        tile.setPadding(dp(c, 16), dp(c, 8), dp(c, 12), dp(c, 8));
+        tile.setPadding(padH, dp(c, 8), padH - dp(c, 4), dp(c, 8));
         tile.setClipChildren(false);
         tile.setClipToPadding(false);
 
-        // Hide the Android 10 circle behind the icon
-        View bg = (View) getField(tile, "mBg");
-        if (bg != null) bg.setVisibility(View.GONE);
-
-        // Label container: fill remaining width, left aligned
         View container = (View) getField(tile, "mLabelContainer");
         if (container != null) {
             LinearLayout.LayoutParams lp =
@@ -151,19 +201,31 @@ public class MainHook implements IXposedHookLoadPackage {
     private void applyState(LinearLayout tile, Object state) {
         Context c = tile.getContext();
         int s = XposedHelpers.getIntField(state, "state"); // 0 unavailable, 1 inactive, 2 active
-        int color = (s == 2) ? COLOR_ACTIVE : COLOR_INACTIVE;
+        int color = get(c, s == 2 ? Config.ACTIVE : Config.INACTIVE);
 
         GradientDrawable shape = new GradientDrawable();
         shape.setColor(color);
-        shape.setCornerRadius(dp(c, RADIUS_DP));
-        tile.setBackground(new RippleDrawable(
-                ColorStateList.valueOf(0x33FFFFFF), shape, null));
+        shape.setCornerRadius(dp(c, get(c, Config.RADIUS)));
+        tile.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), shape, null));
         tile.setAlpha(s == 0 ? 0.5f : 1f);
 
+        // Icon circle behind the icon
+        View bg = (View) getField(tile, "mBg");
+        if (bg != null) {
+            bg.setVisibility(get(c, Config.HIDE_CIRCLE) == 1 ? View.GONE : View.VISIBLE);
+        }
+
+        int sp = get(c, Config.TEXT_SP);
         TextView label = (TextView) getField(tile, "mLabel");
-        if (label != null) label.setTextColor(COLOR_TEXT);
+        if (label != null) {
+            label.setTextColor(get(c, Config.TEXT));
+            label.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        }
         TextView second = (TextView) getField(tile, "mSecondLine");
-        if (second != null) second.setTextColor(COLOR_TEXT_SECOND);
+        if (second != null) {
+            second.setTextColor(get(c, Config.SECOND));
+            second.setTextSize(TypedValue.COMPLEX_UNIT_SP, Math.max(8, sp - 2));
+        }
     }
 
     // ---- helpers ----
