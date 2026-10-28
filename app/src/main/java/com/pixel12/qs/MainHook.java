@@ -21,7 +21,7 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
- * Restyles Android 10 SystemUI quick settings tiles into Pixel / Android 12 style pills.
+ * Restyles the Android 10 SystemUI quick settings tiles into Pixel / Android 12 style pills.
  * Values come from the module app (Pixel 12 QS) through its SettingsProvider.
  * Every hook is wrapped in try/catch so a ROM difference can never crash SystemUI.
  * Check the LSPosed log for the tag "Pixel12QS" if something doesn't apply.
@@ -73,12 +73,14 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) {
         if (!SYSTEMUI.equals(lpparam.packageName)) return;
-        log("Loaded in SystemUI");
+        log("Loaded in SystemUI (build 7)");
         hookResources();
+        hookGrid(lpparam.classLoader);
+        hookQuickTileCount(lpparam.classLoader);
         hookTileView(lpparam.classLoader);
     }
 
-    // ---- columns and tile height ----
+    // ---- column resource and tile height ----
     private void hookResources() {
         try {
             XposedHelpers.findAndHookMethod(Resources.class, "getInteger", int.class,
@@ -89,7 +91,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                 Resources r = (Resources) param.thisObject;
                                 String name = r.getResourceEntryName((Integer) param.args[0]);
                                 if ("quick_settings_num_columns".equals(name)) {
-                                    param.setResult(get(appContext(), Config.COLUMNS));
+                                    int cols = get(appContext(), Config.COLUMNS);
+                                    if (cols > 0) param.setResult(cols);
                                 }
                             } catch (Throwable ignored) {
                             }
@@ -111,23 +114,95 @@ public class MainHook implements IXposedHookLoadPackage {
                                     int dp = get(appContext(), Config.HEIGHT);
                                     param.setResult(Math.round(dp * r.getDisplayMetrics().density));
                                 }
-                                else if ("quick_qs_total_height".equals(name)) {
-                                    // keep the collapsed header tall enough for the taller quick tiles
-                                    int origId = r.getIdentifier("qs_quick_tile_size", "dimen",
-                                            r.getResourcePackageName((Integer) param.args[0]));
-                                    if (origId != 0) {
-                                        int orig = r.getDimensionPixelSize(origId);
-                                        int want = Math.round(get(appContext(), Config.QUICK_HEIGHT)
-                                                * r.getDisplayMetrics().density);
-                                        param.setResult(((Integer) param.getResult()) + (want - orig));
-                                    }
-                                }
                             } catch (Throwable ignored) {
                             }
                         }
                     });
         } catch (Throwable t) {
             log("height hook failed", t);
+        }
+    }
+
+    // ---- columns / rows of the main tile grid ----
+    private void hookGrid(ClassLoader cl) {
+        XC_MethodHook apply = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                applyGrid(param.thisObject);
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                applyGrid(param.thisObject);
+            }
+        };
+        String[][] targets = {
+                {"com.android.systemui.qs.TileLayout", "updateResources"},
+                {"com.android.systemui.qs.TileLayout", "onMeasure"},
+                {"com.android.systemui.qs.TileLayout", "addTile"},
+                {"com.android.systemui.qs.PagedTileLayout$TilePage", "updateResources"},
+                {"com.android.systemui.qs.PagedTileLayout$TilePage", "isFull"},
+                {"com.android.systemui.qs.PagedTileLayout$TilePage", "maxTiles"},
+        };
+        for (String[] t : targets) {
+            try {
+                Class<?> k = XposedHelpers.findClassIfExists(t[0], cl);
+                if (k == null) {
+                    log("class not found: " + t[0]);
+                    continue;
+                }
+                int n = XposedBridge.hookAllMethods(k, t[1], apply).size();
+                log(t[0] + "." + t[1] + " hooked: " + n);
+            } catch (Throwable e) {
+                log("grid hook failed: " + t[0] + "." + t[1], e);
+            }
+        }
+    }
+
+    private static void applyGrid(Object layout) {
+        try {
+            Context c = ((View) layout).getContext();
+            int cols = get(c, Config.COLUMNS);
+            int rows = get(c, Config.ROWS);
+            if (cols > 0) setInt(layout, "mColumns", cols);
+            if (rows > 0) {
+                setInt(layout, "mMaxRows", rows);
+                setInt(layout, "mMaxAllowedRows", rows);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void setInt(Object o, String field, int v) {
+        try {
+            XposedHelpers.setIntField(o, field, v);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ---- how many tiles the quick bar shows (count only, no styling) ----
+    private void hookQuickTileCount(ClassLoader cl) {
+        try {
+            Class<?> q = XposedHelpers.findClassIfExists("com.android.systemui.qs.QuickQSPanel", cl);
+            if (q == null) {
+                log("QuickQSPanel not found");
+                return;
+            }
+            int n = XposedBridge.hookAllMethods(q, "getNumQuickTiles", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Context c = (param.args.length > 0 && param.args[0] instanceof Context)
+                                ? (Context) param.args[0] : appContext();
+                        int v = get(c, Config.QUICK_TILES);
+                        if (v > 0) param.setResult(v);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }).size();
+            log("QuickQSPanel.getNumQuickTiles hooked: " + n);
+        } catch (Throwable t) {
+            log("quick tile count hook failed", t);
         }
     }
 
@@ -173,192 +248,6 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("handleStateChanged hook failed", t);
         }
-
-        hookQuickTiles(cl, tileView);
-        hookQuickBarLayout(cl);
-    }
-
-    // ---- quick bar: same pill tiles as the big grid, filling the row evenly ----
-    private void hookQuickBarLayout(ClassLoader cl) {
-        // 1) Make the quick bar use the full tile view (icon + label) instead of the icon-only one
-        String[] factories = {
-                "com.android.systemui.qs.QSTileHost",
-                "com.android.systemui.qs.tileimpl.QSFactoryImpl"
-        };
-        for (String name : factories) {
-            try {
-                Class<?> f = XposedHelpers.findClass(name, cl);
-                XposedBridge.hookAllMethods(f, "createTileView", new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        try {
-                            if (param.args.length >= 2 && param.args[1] instanceof Boolean) {
-                                param.args[1] = false; // collapsedView = false
-                            }
-                        } catch (Throwable ignored) {
-                        }
-                    }
-                });
-                log("createTileView hooked in " + name);
-            } catch (Throwable t) {
-                log("createTileView hook skipped for " + name);
-            }
-        }
-
-        // 2) Spread the tiles evenly across the row (no empty middle, no edge-hugging icons)
-        try {
-            Class<?> header = XposedHelpers.findClass(
-                    "com.android.systemui.qs.QuickQSPanel$HeaderTileLayout", cl);
-            XC_MethodHook relayout = new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        fixQuickRow((android.view.ViewGroup) param.thisObject);
-                    } catch (Throwable t) {
-                        log("fixQuickRow failed", t);
-                    }
-                }
-            };
-            XposedBridge.hookAllMethods(header, "addTile", relayout);
-            XposedBridge.hookAllMethods(header, "removeTile", relayout);
-            XposedBridge.hookAllMethods(header, "updateResources", relayout);
-            log("HeaderTileLayout hooked");
-        } catch (Throwable t) {
-            log("HeaderTileLayout hook failed", t);
-        }
-    }
-
-    private void fixQuickRow(android.view.ViewGroup row) {
-        Context c = row.getContext();
-        int h = dp(c, get(c, Config.QUICK_HEIGHT));
-        int gap = dp(c, get(c, Config.QUICK_GAP));
-        if (row instanceof LinearLayout) {
-            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL);
-        }
-        for (int i = 0; i < row.getChildCount(); i++) {
-            View v = row.getChildAt(i);
-            if (v instanceof android.widget.Space) {
-                // the spacers are what pushed the icons to the edges
-                if (v.getVisibility() != View.GONE) v.setVisibility(View.GONE);
-                continue;
-            }
-            android.view.ViewGroup.LayoutParams p = v.getLayoutParams();
-            if (p instanceof LinearLayout.LayoutParams) {
-                LinearLayout.LayoutParams o = (LinearLayout.LayoutParams) p;
-                if (o.width == 0 && o.height == h && o.weight == 1f
-                        && o.leftMargin == gap && o.rightMargin == gap) continue;
-            }
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, h, 1f);
-            lp.setMargins(gap, 0, gap, 0);
-            lp.gravity = Gravity.CENTER_VERTICAL;
-            v.setLayoutParams(lp);
-        }
-    }
-
-    // ---- quick bar (the collapsed row of icon tiles at the top) ----
-    private void hookQuickTiles(ClassLoader cl, final Class<?> tileView) {
-        try {
-            Class<?> baseClass = XposedHelpers.findClass(
-                    "com.android.systemui.qs.tileimpl.QSTileBaseView", cl);
-            Class<?> stateClass = XposedHelpers.findClass(
-                    "com.android.systemui.plugins.qs.QSTile$State", cl);
-            XposedHelpers.findAndHookMethod(baseClass, "handleStateChanged", stateClass,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                // Big tiles are handled by the QSTileView hook
-                                if (tileView.isInstance(param.thisObject)) return;
-                                applyQuickState((View) param.thisObject, param.args[0]);
-                            } catch (Throwable t) {
-                                log("applyQuickState failed", t);
-                            }
-                        }
-                    });
-        } catch (Throwable t) {
-            log("quick tile hook failed", t);
-        }
-    }
-
-    /**
-     * Collapsed quick bar tile (icon-only class). We turn it into the same pill as the big tiles:
-     * rounded background, icon on the left, our own label + status text on the right.
-     * Works without knowing any RR class names: the row is found through the tile's parent.
-     */
-    private void applyQuickState(View tile, Object state) {
-        Context c = tile.getContext();
-        int s = XposedHelpers.getIntField(state, "state");
-        int color = get(c, s == 2 ? Config.ACTIVE : Config.INACTIVE);
-
-        View circle = (View) getField(tile, "mBg");
-        if (circle != null) circle.setVisibility(View.GONE);
-
-        GradientDrawable shape = new GradientDrawable();
-        shape.setColor(color);
-        shape.setCornerRadius(dp(c, get(c, Config.RADIUS)));
-        tile.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), shape, null));
-        tile.setAlpha(s == 0 ? 0.5f : 1f);
-
-        if (tile instanceof LinearLayout) {
-            addQuickLabels((LinearLayout) tile, state);
-        }
-
-        android.view.ViewParent parent = tile.getParent();
-        if (parent instanceof LinearLayout) {
-            fixQuickRow((LinearLayout) parent);
-        }
-    }
-
-    private void addQuickLabels(LinearLayout tile, Object state) {
-        Context c = tile.getContext();
-        TextView label = (TextView) XposedHelpers.getAdditionalInstanceField(tile, "p12_label");
-        TextView second = (TextView) XposedHelpers.getAdditionalInstanceField(tile, "p12_second");
-        if (label == null) {
-            int padH = dp(c, get(c, Config.PAD));
-            tile.setOrientation(LinearLayout.HORIZONTAL);
-            tile.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            tile.setPadding(padH, dp(c, 8), padH - dp(c, 4), dp(c, 8));
-            tile.setClipChildren(false);
-            tile.setClipToPadding(false);
-
-            LinearLayout col = new LinearLayout(c);
-            col.setOrientation(LinearLayout.VERTICAL);
-            col.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-
-            label = new TextView(c);
-            label.setSingleLine(true);
-            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            label.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
-            second = new TextView(c);
-            second.setSingleLine(true);
-            second.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            second.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
-            col.addView(label);
-            col.addView(second);
-
-            LinearLayout.LayoutParams lp =
-                    new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            lp.setMarginStart(dp(c, 12));
-            lp.gravity = Gravity.CENTER_VERTICAL;
-            tile.addView(col, lp);
-
-            XposedHelpers.setAdditionalInstanceField(tile, "p12_label", label);
-            XposedHelpers.setAdditionalInstanceField(tile, "p12_second", second);
-            log("Styled a quick bar tile, parent = " + tile.getParent().getClass().getName());
-        }
-
-        int sp = get(c, Config.TEXT_SP);
-        label.setTextColor(get(c, Config.TEXT));
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        second.setTextColor(get(c, Config.SECOND));
-        second.setTextSize(TypedValue.COMPLEX_UNIT_SP, Math.max(8, sp - 2));
-
-        Object l = getField(state, "label");
-        Object sec = getField(state, "secondaryLabel");
-        label.setText(l instanceof CharSequence ? (CharSequence) l : "");
-        CharSequence secText = sec instanceof CharSequence ? (CharSequence) sec : "";
-        second.setText(secText);
-        second.setVisibility(secText.length() == 0 ? View.GONE : View.VISIBLE);
     }
 
     private void restyleLayout(LinearLayout tile) {
@@ -397,10 +286,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void applyState(LinearLayout tile, Object state) {
         Context c = tile.getContext();
-        android.view.ViewParent parent = tile.getParent();
-        if (parent instanceof LinearLayout) {
-            fixQuickRow((android.view.ViewGroup) parent);
-        }
         int s = XposedHelpers.getIntField(state, "state"); // 0 unavailable, 1 inactive, 2 active
         int color = get(c, s == 2 ? Config.ACTIVE : Config.INACTIVE);
 
@@ -410,7 +295,6 @@ public class MainHook implements IXposedHookLoadPackage {
         tile.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), shape, null));
         tile.setAlpha(s == 0 ? 0.5f : 1f);
 
-        // Icon circle behind the icon
         View bg = (View) getField(tile, "mBg");
         if (bg != null) {
             bg.setVisibility(get(c, Config.HIDE_CIRCLE) == 1 ? View.GONE : View.VISIBLE);

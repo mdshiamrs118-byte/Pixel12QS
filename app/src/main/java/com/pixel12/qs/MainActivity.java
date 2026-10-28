@@ -57,13 +57,13 @@ public class MainActivity extends Activity {
         buildPreview();
 
         header("Layout");
-        slider("Columns", Config.COLUMNS, 1, 5, "");
+        slider("Columns (0 = ROM default)", Config.COLUMNS, 0, 10, "");
+        slider("Rows (0 = ROM default)", Config.ROWS, 0, 10, "");
+        slider("Quick bar tiles (0 = ROM default)", Config.QUICK_TILES, 0, 10, "");
         slider("Tile height", Config.HEIGHT, 48, 120, " dp");
         slider("Corner roundness", Config.RADIUS, 0, 60, " dp");
         slider("Side padding", Config.PAD, 4, 32, " dp");
         slider("Text size", Config.TEXT_SP, 10, 20, " sp");
-        slider("Quick bar tile height", Config.QUICK_HEIGHT, 40, 100, " dp");
-        slider("Quick bar tile gap", Config.QUICK_GAP, 0, 16, " dp");
 
         header("Colors");
         colorRow("Active tile color", Config.ACTIVE);
